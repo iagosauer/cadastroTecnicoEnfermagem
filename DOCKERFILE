@@ -1,0 +1,58 @@
+# --- STAGE 1: BUILD (Fase de Construção) ---
+# Usa uma imagem Node.js completa para instalar dependências e construir o projeto.
+FROM node:20-alpine AS builder
+
+# Define o diretório de trabalho dentro do contêiner
+WORKDIR /app
+
+# Copia o package.json e o yarn.lock/package-lock.json
+# Isso permite que a camada de instalação de dependências seja cacheada,
+# evitando reinstalação se apenas o código-fonte mudar.
+COPY package.json yarn.lock package-lock.json ./
+
+# Instala todas as dependências (incluindo devDependencies)
+# O driver 'pg' é uma dependência nativa, por isso usamos o Node Alpine completo
+RUN npm install
+
+# Copia o restante do código-fonte
+COPY . .
+
+# Comando crucial para Next.js:
+# Adiciona o output standalone (o Next.js cria uma pasta .next/standalone com tudo)
+# Isso reduz o tamanho da imagem final
+RUN npx next telemetry disable
+RUN npm run build
+
+# --- STAGE 2: RUN (Fase de Execução/Produção) ---
+# Usa uma imagem Node.js mais leve e otimizada apenas para rodar a aplicação.
+FROM node:20-alpine AS runner
+
+# Define o usuário 'nextjs' para maior segurança
+# NOTA: O driver 'pg' é uma dependência nativa do Node, o que pode causar problemas
+# com Alpine. Se você tiver problemas, volte para uma imagem Node maior ou instale dependências build-essentials.
+# No entanto, a base 'node:20-alpine' geralmente funciona bem para a maioria dos casos.
+RUN apk add --no-cache libc6-compat
+RUN npm install -g next
+USER node
+
+# Define o diretório de trabalho como o diretório standalone
+WORKDIR /app
+
+# Copia os arquivos essenciais do estágio de build
+# 1. Copia o diretório standalone gerado pelo 'next build'
+COPY --from=builder /app/.next/standalone ./
+# 2. Copia o diretório public
+COPY --from=builder /app/public ./public
+# 3. Copia o diretório estático (se houver, para o cache do Next.js)
+COPY --from=builder /app/.next/static ./.next/static
+
+# As variáveis de ambiente do Postgres (PG_*, etc.) DEVEM ser passadas
+# na hora de rodar o contêiner ou via Docker Compose.
+# Para este Next.js, assumimos que as variáveis .env.local serão lidas pelo processo
+# na inicialização.
+
+# Exponha a porta onde o Next.js roda (padrão 3000)
+EXPOSE 3000
+
+# Comando para iniciar o servidor de produção
+CMD ["node", "server.js"]
